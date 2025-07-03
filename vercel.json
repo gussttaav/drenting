@@ -1,0 +1,16 @@
+{
+    "version": 2,
+    "builds": [
+      {
+        "src": "drenting_tool_server.py",
+        "use": "@vercel/python"
+      }
+    ],
+    "routes": [
+      {
+        "src": "/buscar_vehiculos",
+        "methods": ["POST"],
+        "dest": "drenting_tool_server.py"
+      }
+    ]
+  }

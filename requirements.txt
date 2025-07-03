@@ -1,0 +1,5 @@
+dotenv
+fastapi
+pymongo
+openai
+python-multipart
