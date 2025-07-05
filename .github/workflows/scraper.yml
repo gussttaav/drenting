@@ -1,0 +1,34 @@
+name: Run Scraper
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run-scraper:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y chromium-browser
+        pip install -r scraper_dependencies.txt
+        pip install webdriver-manager pymongo
+
+    - name: Set environment variables
+      run: echo "MONGO_URI=${{ secrets.MONGO_URI }}" >> $GITHUB_ENV
+
+    - name: Run scraper
+      env:
+        MONGO_URI: ${{ secrets.MONGO_URI }}
+      run: |
+        python scrapper.py
