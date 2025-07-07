@@ -3,6 +3,7 @@ from bs4 import BeautifulSoup
 import time
 import re
 import os
+import openai
 from datetime import datetime
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -21,8 +22,10 @@ headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
 }
 
+openai.api_key = os.getenv("OPENAI_API_KEY")
+
 # Conexión a MongoDB
-mongo_uri = os.getenv('MONGO_URI') or os.getenv('SCRAPER_MONGO_URI')
+mongo_uri = os.getenv('SCRAPER_MONGO_URI') or os.getenv('MONGO_URI')
 mongo_client = MongoClient(mongo_uri)
 
 db = mongo_client['vehiculos']
@@ -350,6 +353,106 @@ def guardar_en_mongodb(vehiculo):
     else:
         print(f"Vehículo actualizado: {url}")
 
+def generar_texto_documento(doc):
+    # Apartado Vehículo y URL
+    texto = f"Vehículo: {doc.get('nombre', 'No disponible')}\n"
+    texto += f"Url: {doc.get('url', 'No disponible')}\n"
+    
+    precios = doc.get("precios", [])
+    precio_min = None
+    if precios:
+        precio_min = min(precios, key=lambda p: p["importe"])
+    texto += f"Precio: {precio_min['importe']}€/mes durante {precio_min['duracion']} meses y {precio_min['kms']} km/año\n\n" if precio_min else '\n'
+        
+    
+    # Apartado Descripción
+    texto += "Descripción:\n"
+    texto += f"{doc.get('descripcion', 'No disponible')}\n\n"
+    
+    # Apartado Información General
+    texto += "Información General:\n"
+    for item in doc.get('informacion', []):
+        texto += f"- {item}\n"
+    texto += "\n"
+
+    # Apartado Datos técnicos
+    texto += "Datos técnicos:\n"
+    campos_excluidos = ['_id', 'scraped_at', 'informacion', 'descripcion', 'nombre', 'url', 'precios', 'embedding']
+
+    for clave, valor in doc.items():
+        if clave in campos_excluidos:
+            continue
+
+        # Omitir si el valor es 'no disponible'
+        if isinstance(valor, str) and valor.lower() == 'no disponible':
+            continue
+
+        # Control de campos numéricos o condicionales
+        if clave in ['consumo', 'kilómetros', 'nº_marchas', 'plazas', 'potencia', 'puertas', 'precios']:
+            if not any(char.isdigit() for char in str(valor)):
+                continue
+
+        # Normalizar clave para texto
+        clave_texto = clave.replace('_', ' ').capitalize()
+        texto += f"{clave_texto}: {valor}\n"
+
+    return texto
+
+def obtener_embeddings(texto):
+    embedding = None
+    try:
+        response = openai.embeddings.create(
+            input=texto,
+            model="text-embedding-3-small"
+        )
+        embedding = response.data[0].embedding
+    except Exception as e:
+        print(f"Error generando embedding: {e}")
+    
+    return embedding
+
+
+def actualizar_embedding(vehiculo):
+    """
+    Actualiza el embedding del vehículo según las siguientes reglas:
+    1. Busca el vehículo en MongoDB por su URL.
+    2. Si ya existe:
+        a. Si no tiene embedding, lo calcula y lo asigna al nuevo vehículo.
+        b. Si tiene embedding, compara el texto generado del nuevo y el viejo vehículo:
+            - Si son distintos, genera el embedding y lo asigna al nuevo vehículo.
+            - Si son iguales, asigna el embedding del vehículo en la base de datos al nuevo vehículo.
+    3. Si no existe, calcula el embedding y lo asigna al nuevo vehículo.
+    """
+    url = vehiculo.get('url')
+    if not url:
+        print('Vehículo sin URL, no se puede actualizar embedding.')
+        return vehiculo  # No se puede actualizar embedding sin URL
+
+    vehiculo_db = coleccion.find_one({'url': url})
+    texto_nuevo = generar_texto_documento(vehiculo)
+
+    if vehiculo_db:
+        print(f'Vehículo encontrado en la base de datos')
+        embedding_db = vehiculo_db.get('embedding')
+        texto_db = generar_texto_documento(vehiculo_db)
+        if embedding_db is None:
+            print('El vehículo no tiene embedding, generando nuevo embedding...')
+            embedding = obtener_embeddings(texto_nuevo)
+            vehiculo['embedding'] = embedding
+        else:
+            if texto_nuevo != texto_db:
+                print('Las propiedades del vehículo han cambiado, generando nuevo embedding...')
+                embedding = obtener_embeddings(texto_nuevo)
+                vehiculo['embedding'] = embedding
+            else:
+                print('Las propiedades del vehículo no ha cambiado, reutilizando embedding existente.')
+                vehiculo['embedding'] = embedding_db
+    else:
+        print(f'Vehículo nuevo, generando embedding: {url}')
+        embedding = obtener_embeddings(texto_nuevo)
+        vehiculo['embedding'] = embedding
+    return vehiculo
+
 
 def main():
     page = 1
@@ -384,10 +487,11 @@ def main():
             try:
                 vehiculo = obtener_datos_vehiculo(coche)
                 if vehiculo is None:
-                    time.sleep(0.5)
+                    time.sleep(0.3)
                     continue
 
                 vehiculo = procesar_documento_vehiculo(vehiculo)
+                vehiculo = actualizar_embedding(vehiculo)
                 guardar_en_mongodb(vehiculo)
                 total_scrapeados += 1
                 print(f"Coches scrapeados hasta ahora: {total_scrapeados}")
